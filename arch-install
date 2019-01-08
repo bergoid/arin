@@ -17,7 +17,7 @@ DOCSTRING
 
 function totalRam
 {
-    cat /proc/meminfo | grep MemTotal | sed "s/^MemTotal:\s*\([0-9]*\)\skB/\1K/") | numfmt --from=si --to=si --round=nearest --format "%.0f"
+    cat /proc/meminfo | grep MemTotal | sed "s/^MemTotal:\s*\([0-9]*\)\skB/\1K/" | numfmt --from=si --to=si --round=nearest --format "%.0f"
 }
 
 checkForHelp $1
@@ -82,31 +82,60 @@ if [ "$?" -eq "0" ]; then
     exit 1
 fi
 
+#
+# Swap space recommendations
+#
+# https://askubuntu.com/questions/49109/i-have-16gb-ram-do-i-need-32gb-swap/49138#49138
+#
+#    RAM         Recommended swap space         Recommended swap space
+#                                               if allowing for hibernation
+#
+#    <= 2GB      2 times the amount of RAM      3 times the amount of RAM
+#    2GB-8GB     Equal to the amount of RAM     2 times the amount of RAM
+#    8GB-64GB    At least 4 GB                  1.5 times the amount of RAM
+#    >=64GB      At least 4 GB                  Hibernation not recommended
+#
 
-# (Re-)partition the target
-rootSize=6G
+# (Re-)partition the target: 'root', 'swap' and 'home'
+rootSize=2G
+# TODO : check available space on target
+#rootSize=6G
+# TODO : calculate swapSize according to recommendations
 swapSize=$(totalRam)
 exitOnError "Error: could not obtain the RAM size"
+
+echo swap size == $swapSize
+
 try sfdisk --label dos --wipe always --wipe-partitions always "$target" << EOF
 size=$rootSize,type=83
 size=$swapSize,type=82
 type=83
 EOF
 
+p=
 # If the target is an image file, set it up as a loop device
-if targetIsImage; then
+if $targetIsImage; then
     createLoopDevice "$target"
     targetDevice="$loopDevice"
+    p=p
 else
     targetDevice="$target"
 fi
 
+partitionRoot="${targetDevice}${p}1"
+partitionSwap="${targetDevice}${p}2"
+partitionHome="${targetDevice}${p}3"
+
 # Format the partitions of the target device
-mkfs.ext4 "${targetDevice}1"
-mkswap "${targetDevice}2"
-swapon "${targetDevice}2"
-mkfs.ext4 "${targetDevice}3"
+mkfs.ext4 "$partitionRoot"
+mkswap "$partitionSwap"
+swapon "$partitionSwap"
+mkfs.ext4 "$partitionHome"
+
+# Mount the root & home partitions in a folder
+mountDir="mount-$hostName-$(timestamp-id)"
+mountPartition "$partitionRoot" "$mountDir/root"
+mountPartition "$partitionHome" "$mountDir/home"
 
 # Make sure the system clock on the host OS is synced with NTP
 try timedatectl set-ntp true
-
