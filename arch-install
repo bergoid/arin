@@ -1,0 +1,112 @@
+#!/bin/bash
+
+. arin-utils
+if [ "$?" -ne "0" ]; then
+  echo "$0: Error while sourcing rp-utils" >&2
+  exit 1
+fi
+
+function showHelp
+{
+cat << DOCSTRING
+Usage: $(basename "$0") [CONFIGFILE]
+
+Arch linux installation script.
+DOCSTRING
+}
+
+function totalRam
+{
+    cat /proc/meminfo | grep MemTotal | sed "s/^MemTotal:\s*\([0-9]*\)\skB/\1K/") | numfmt --from=si --to=si --round=nearest --format "%.0f"
+}
+
+checkForHelp $1
+
+requireRoot
+
+# Source config file
+configFile="$1"
+if [ -n "$configFile" ]; then
+    try test -f "$configFile"
+    try . "$configFile"
+fi
+
+echo ############################################################
+echo #                                                          #
+echo #  WARNING : this will wipe all previous data on your      #
+echo #            target device/image!                          #
+echo #                                                          #
+echo ############################################################
+echo
+
+# Prompt for config values, if missing
+promptIfEmpty target "Device (or image file) to install Arch Linux on"
+promptIfEmpty userName "Username to create on the system"
+promptIfEmpty password "User password to login on the system"
+promptIfEmpty hostName "Hostname of the system"
+promptIfEmpty wifiSsid "SSID of the Wi-Fi network (leave empty if you don't want to configure Wi-Fi)"
+promptIfEmpty wifiPassphrase "Passphrase of the Wi-Fi network (leave empty if you don't want to configure Wi-Fi)"
+
+# Validate config values
+try test -n "$target"
+try test -n "$userName"
+try test -n "$password"
+try test -n "$hostName"
+try test -n "$wifiSsid"
+try test -n "$wifiPassphrase"
+target="$(readlink -f "$target")"
+
+# Print all config
+echo
+echo target: $target
+echo userName: $userName
+echo password: $password
+echo hostName: $hostName
+echo wifiSsid: $wifiSsid
+echo wifiPassphrase: $wifiPassphrase
+
+# Determine if we're working with an image file
+if isSubPathOf "$target" "/dev"; then
+    targetIsImage=false
+else
+    targetIsImage=true
+    # Check if target image file exists
+    try test -f "$target"
+fi
+
+# Check if target is not mounted
+mountOutput=$(mount | grep "$target")
+if [ "$?" -eq "0" ]; then
+    errcho "Error. The target device is mounted:"
+    errcho $mountOutput
+    exit 1
+fi
+
+
+# (Re-)partition the target
+rootSize=6G
+swapSize=$(totalRam)
+exitOnError "Error: could not obtain the RAM size"
+try sfdisk --label dos --wipe always --wipe-partitions always "$target" << EOF
+size=$rootSize,type=83
+size=$swapSize,type=82
+type=83
+EOF
+
+# If the target is an image file, set it up as a loop device
+if targetIsImage; then
+    createLoopDevice "$target"
+    targetDevice="$loopDevice"
+else
+    targetDevice="$target"
+fi
+
+# Format the partitions of the target device
+mkfs.ext4 "${targetDevice}1"
+mkswap "${targetDevice}2"
+swapon "${targetDevice}2"
+mkfs.ext4 "${targetDevice}3"
+
+# Make sure the system clock on the host OS is synced with NTP
+try timedatectl set-ntp true
+

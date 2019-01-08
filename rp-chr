@@ -1,0 +1,82 @@
+#!/bin/bash
+
+. arin-utils
+if [ "$?" -ne "0" ]; then
+  echo "$0: Error while sourcing arin-utils" >&2
+  exit 1
+fi
+
+function showHelp
+{
+cat << DOCSTRING
+Usage: $(basename "$0") IMAGEFILE
+
+Chroot into the root partition of a Raspberry Pi image file.
+DOCSTRING
+}
+
+checkForHelp $1
+
+require qemu-arm-static
+require losetup
+
+function registerArm
+{
+    printf ':arm:M::\x7fELF\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x28\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-arm-static:' > /proc/sys/fs/binfmt_misc/register
+}
+
+function unRegisterArm
+{
+    echo "-1" > /proc/sys/fs/binfmt_misc/arm
+}
+
+function enableArm
+{
+    tru \
+        unRegisterArm \
+        registerArm
+}
+
+imageFile="$1"
+try test -f "$imageFile"
+
+createLoopDevice "$imageFile"
+
+# Mount partitions
+imageFileName="$(basename "$imageFile")"
+imageBaseName="${imageFileName%.*}"
+mountDir="$imageBaseName-$(timestamp-id)"
+
+tru \
+    "rm -rf $mountDir" \
+    mkdir -p "$mountDir"
+
+mountPartition "${loopDevice}p1" "$mountDir/boot"
+mountPartition "${loopDevice}p2" "$mountDir/root"
+
+tru \
+    "umount $mountDir/root/proc" \
+    mount -t proc none "$mountDir/root/proc"
+tru \
+    "umount $mountDir/root/sys" \
+    mount -t sysfs none "$mountDir/root/sys"
+tru \
+    "umount $mountDir/root/dev" \
+    mount -o bind /dev "$mountDir/root/dev"
+tru \
+    "mv $mountDir/root/etc/resolv.conf.bak $mountDir/root/etc/resolv.conf" \
+    mv "$mountDir/root/etc/resolv.conf" "$mountDir/root/etc/resolv.conf.bak"
+tru \
+    "rm $mountDir/root/etc/resolv.conf" \
+    cp /etc/resolv.conf "$mountDir/root/etc/resolv.conf"
+tru \
+    "rm $mountDir/root/usr/bin/qemu-arm-static" \
+    cp /usr/bin/qemu-arm-static "$mountDir/root/usr/bin/"
+
+# Enable interpreter for ARM binaries
+enableArm
+
+# chroot
+echo Now 'chroot'-ing into $mountDir ...
+chroot "$mountDir/root" /usr/bin/bash
+echo Back in host OS

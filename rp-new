@@ -1,0 +1,186 @@
+#!/bin/bash
+
+. arin-utils
+if [ "$?" -ne "0" ]; then
+  echo "$0: Error while sourcing arin-utils" >&2
+  exit 1
+fi
+
+function showHelp
+{
+cat << DOCSTRING
+Usage: $(basename "$0") [CONFIGFILE]
+
+Create an image file with an ARM Arch Linux OS to flash on a microSD card for the Raspberry Pi.
+DOCSTRING
+}
+
+checkForHelp $1
+
+require fallocate
+require sfdisk
+require bsdtar
+require mkfs.vfat
+require mkfs.ext4
+
+requireRoot
+
+############################################################
+#
+# Download a file with curl, only if the file doesn't exist
+# yet locally.
+#
+# curlIfNewer URL
+#
+function curlIfMissing
+{
+    local url="$1"
+
+    if [ -z "$url" ]; then
+        exitWith 1 "curlIfMissing: the url argument is empty"
+    fi
+
+    local filename="${url##*/}"
+
+    if [ ! -f "$filename" ]; then
+        try curl -L -O $curlArgs
+    fi
+}
+
+############################################################
+#
+# Download a file with curl, only if the file at the URL has
+# been modified later than a local copy in the current
+# working directory.
+#
+# curlIfNewer URL
+#
+function curlIfNewer
+{
+    local url="$1"
+
+    if [ -z "$url" ]; then
+        exitWith 1 "curlIfNewer: the url argument is empty"
+    fi
+
+    local filename="${url##*/}"
+
+    if [ -e "$filename" ]; then
+        local zflag="-z $filename"
+    else
+        local zflag=
+    fi
+
+    local curlArgs="$zflag -L -O $url"
+    try curl $curlArgs
+}
+
+############################################################
+#
+# Untar OS tarball
+#
+function makeOS
+{
+    local rpFileVar="rp${rpType}File"
+    local rpFile="${!rpFileVar}"
+
+    try bsdtar -xpf "$rpFile" -C "$mountDir/root"
+    try sync
+
+    try mv "$mountDir/root/boot/"* "$mountDir/boot"
+}
+
+############################################################
+#
+# Download Arch Linux ARM tarball if missing
+#
+function getTarball
+{
+    local urlVar="rp${rpType}Url"
+    curlIfMissing "${!urlVar}"
+}
+
+# Tarball files and URLs of Arch Linux ARM versions
+rp1File="ArchLinuxARM-rpi-latest.tar.gz"
+rp2File="ArchLinuxARM-rpi-2-latest.tar.gz"
+rp3File="ArchLinuxARM-rpi-3-latest.tar.gz"
+rpBaseUrl="http://os.archlinuxarm.org/os"
+rp1Url="$rpBaseUrl/$rp1File"
+rp2Url="$rpBaseUrl/$rp2File"
+rp3Url="$rpBaseUrl/$rp3File"
+
+# Source config file
+configFile="$1"
+if [ -n "$configFile" ]; then
+    try test -f "$configFile"
+    try . "$configFile"
+fi
+
+# Prompt for config values, if missing
+promptIfEmpty rpType "Type of Raspberry Pi (1, 2 or 3)"
+promptIfEmpty imageSize "Size of the image file (e.g.: '2G')"
+promptIfEmpty userName "Username to create on the system"
+promptIfEmpty password "User password to login on the system"
+promptIfEmpty hostName "Hostname of the system"
+promptIfEmpty wifiSsid "SSID of the Wi-Fi network"
+promptIfEmpty wifiPassphrase "Passphrase of the Wi-Fi network"
+
+# Validate config values
+try test -n "$rpType"
+try test -n "$imageSize"
+try test -n "$userName"
+try test -n "$password"
+try test -n "$hostName"
+#try test "$(basename $hostName)" = "$hostName"
+#try test "$(readlink -f $(dirname $hostName))" = "$(readlink -f .)"
+try test -n "$wifiSsid"
+try test -n "$wifiPassphrase"
+
+# Print all config
+echo
+echo rpType: $rpType
+echo imageSize: $imageSize
+echo userName: $userName
+echo password: $password
+echo hostName: $hostName
+echo wifiSsid: $wifiSsid
+echo wifiPassphrase: $wifiPassphrase
+
+# Extra variables dependent on config
+mountDir="rp-$hostName-$(timestamp-id)"
+imageFile="rp-$hostName.img"
+
+# curl tarball
+getTarball
+
+# Create image file
+try rm -f "$imageFile"
+try fallocate -l "$imageSize" "$imageFile"
+
+# Partition image file
+try sfdisk "$imageFile" << EOF
+size=100M, type=c
+type=83
+EOF
+
+createLoopDevice "$imageFile"
+
+# Format partitions
+partBoot="${loopDevice}p1"
+partRoot="${loopDevice}p2"
+try mkfs.vfat -F32 "$partBoot"
+try mkfs.ext4 -F "$partRoot"
+
+tru \
+    "rm -rf $mountDir" \
+    mkdir -p "$mountDir"
+
+mountPartition "$partBoot" "$mountDir/boot"
+mountPartition "$partRoot" "$mountDir/root"
+
+# untar OS
+makeOS
+
+# TODO: setup wifi, user, hostname.
+
+echo Image successfully created: $imageFile

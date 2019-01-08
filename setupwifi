@@ -1,0 +1,71 @@
+#!/bin/bash
+
+. rabot-utils
+if [ "$?" -ne "0" ]; then
+  echo "$0: Error while sourcing rabot-utils" >&2
+  exit 1
+fi
+
+function showHelp
+{
+cat << DOCSTRING
+Usage: $(basename "$0") /dev/disk
+
+Enables wifi on a headless Arch Linux Raspberry Pi
+with wpa_supplicant.
+DOCSTRING
+}
+
+checkForHelp $1
+minNumArgs 1 $#
+
+require wpa_supplicant
+require wpa_passphrase
+
+requireRoot
+
+# Adapted from:
+# https://archlinuxarm.org/forum/viewtopic.php?f=31&t=11529
+#
+
+DISK="$1"
+
+echo -n "Enter SSID name of wifi network (default: $ssid): " && read SSID
+: ${SSID:=$ssid}
+
+echo -n "Enter passphrase of wifi network: " && read PASS
+
+if [[ ! -b "${DISK}" ]] ; then
+echo "Not a block device: ${DISK}"
+exit 1
+fi
+
+echo Mounting
+mkdir -p root
+exitOnError
+
+mount "${DISK}2" root
+exitOnError
+
+cat << EOF >> root/etc/systemd/network/wlan0.network
+[Match]
+Name=wlan0
+
+[Network]
+DHCP=yes
+EOF
+
+wpa_passphrase "${SSID}" "${PASS}" > root/etc/wpa_supplicant/wpa_supplicant-wlan0.conf
+exitOnError
+
+ln -s \
+       /usr/lib/systemd/system/wpa_supplicant@.service \
+       root/etc/systemd/system/multi-user.target.wants/wpa_supplicant@wlan0.service
+exitOnError
+
+echo Unmounting
+umount root
+exitOnError
+
+echo Cleaning up
+rmdir root

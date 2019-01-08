@@ -1,0 +1,70 @@
+#!/bin/bash
+
+[ -n "$RP_UTILS" ] && return || readonly RP_UTILS=1
+
+. rabot-utils
+if [ "$?" -ne "0" ]; then
+  echo "$0: Error while sourcing rabot-utils" >&2
+  exit 1
+fi
+
+#########################################################
+#                                                       #
+#    Some utility functions used by the 'rp' scripts    #
+#                                                       #
+#########################################################
+
+RABOT_VERBOSE=1
+
+
+############################################################
+#
+# Detach loop device
+#
+function detachLoopDevice
+{
+    losetup --detach $loopDevice
+}
+
+############################################################
+#
+# Create loop device from image file
+#
+# createLoopDevice IMAGEFILE
+#
+# This function has the side effect that the variable
+# 'loopDevice' is created.
+#
+function createLoopDevice
+{
+    # Create loop device
+    tru \
+        "detachLoopDevice" \
+        losetup -P --find --show "$1"
+
+    # Obtain loop device name
+    loopDevice=$(losetup -a | head -n 1 | cut -d ':' -f1)
+    try test -n "$loopDevice"
+}
+
+
+############################################################
+#
+# Mount a partition
+#
+# mountPartition DEVICE MOUNTPOINT
+#
+# DEVICE    : the device path corresponding to the partiton
+# MOUNTPOINT: the directory where the partition needs to be mounted.
+#             If non-existent, it will be created.
+#
+function mountPartition
+{
+    local device="$1"
+    local mountPoint="$2"
+
+    try mkdir -p "$mountPoint"
+    tru \
+        "umount $mountPoint" \
+        mount "$device" "$mountPoint"
+}
