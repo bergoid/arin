@@ -15,14 +15,110 @@ Arch linux installation script.
 DOCSTRING
 }
 
-function totalRam
+require numfmt
+
+function totalRamBytes
 {
-    cat /proc/meminfo | grep MemTotal | sed "s/^MemTotal:\s*\([0-9]*\)\skB/\1K/" | numfmt --from=si --to=si --round=nearest --format "%.0f"
+#    cat /proc/meminfo | grep MemTotal | sed "s/^MemTotal:\s*\([0-9]*\)\skB/\1K/" | numfmt --from=si --to=si --round=nearest --format "%.0f"
+#    cat /proc/meminfo | grep MemTotal | sed "s/^MemTotal:\s*\([0-9]*\)\skB/\1K/"
+local totalRamKb=$(cat /proc/meminfo | grep MemTotal | sed "s/^MemTotal:\s*\([0-9]*\)\skB/\1/")
+
+    echo $(( $totalRamKb * 1024 ))
+}
+
+function neededSwapSpaceBytes
+{
+
+#
+# Swap space recommendations
+#
+# https://askubuntu.com/questions/49109/i-have-16gb-ram-do-i-need-32gb-swap/49138#49138
+#
+#    RAM         [1] Recommended swap space           [2] Recommended swap space
+#                                                     if allowing for hibernation
+#    --------    --------------------------------     ---------------------------------
+#    <= 2GB      [1.1] 2 times the amount of RAM      [2.1] 3 times the amount of RAM
+#    2GB-8GB     [1.2] Equal to the amount of RAM     [2.2] 2 times the amount of RAM
+#    8GB-64GB    [1.3] At least 4 GB                  [2.3] 1.5 times the amount of RAM
+#    >=64GB      [1.4] At least 4 GB                  [2.4] Hibernation not recommended
+#
+
+    ramBytes="$1"
+    allowHibernation=${2:-true}
+    try test -n "$ramBytes"
+    try test "$allowHibernation" = "true" -o "$allowHibernation" = "false"
+
+    bytes2G=2147483648
+    bytes4G=4294967296
+    bytes8G=8589934592
+    bytes64G=68719476736
+
+    # [2]
+    if $allowHibernation; then
+
+       # [2.1]
+       if [ $ramBytes -le $bytes2G ]; then
+           echo $(( $ramBytes * 3 ))
+           return
+       fi
+
+       # [2.2]
+       if [ $ramBytes -le $bytes8G ]; then
+           echo $(( $ramBytes * 2 ))
+           return
+       fi
+
+       # [2.3]
+       if [ $ramBytes -le $bytes64G ]; then
+           echo $(( $ramBytes * 3 / 2 ))
+           return
+       fi
+
+       # [2.4] Hibernation not recommended,
+       # but just return the amount of RAM
+       echo $ramBytes
+       return
+
+    # [1]
+    else
+
+       # [1.1]
+       if [ $ramBytes -le $bytes2G ]; then
+           echo $(( $ramBytes * 2 ))
+           return
+       fi
+
+       # [1.2]
+       if [ $ramBytes -le $bytes8G ]; then
+           echo $ramBytes
+           return
+       fi
+
+       # [1.3], [1.4], At least 4GB,
+       # but just return 8GB
+       echo $bytes8G
+       return
+
+    fi
+
+}
+
+echo Total RAM in bytes: $(totalRamBytes)
+echo Recommended amount of swap space: $(neededSwapSpaceBytes $(totalRamBytes))
+exit 0
+
+function printBytesHuman
+{
+    echo $1 | numfmt --from=si --to=si --round=nearest --format "%.0f"
 }
 
 checkForHelp $1
 
 requireRoot
+
+echo $(totalRamBytes)
+printBytesHuman 500000
+exit
 
 # Source config file
 configFile="$1"
@@ -81,20 +177,6 @@ if [ "$?" -eq "0" ]; then
     errcho $mountOutput
     exit 1
 fi
-
-#
-# Swap space recommendations
-#
-# https://askubuntu.com/questions/49109/i-have-16gb-ram-do-i-need-32gb-swap/49138#49138
-#
-#    RAM         Recommended swap space         Recommended swap space
-#                                               if allowing for hibernation
-#
-#    <= 2GB      2 times the amount of RAM      3 times the amount of RAM
-#    2GB-8GB     Equal to the amount of RAM     2 times the amount of RAM
-#    8GB-64GB    At least 4 GB                  1.5 times the amount of RAM
-#    >=64GB      At least 4 GB                  Hibernation not recommended
-#
 
 # (Re-)partition the target: 'root', 'swap' and 'home'
 rootSize=2G
