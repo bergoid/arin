@@ -17,16 +17,38 @@ DOCSTRING
 
 require numfmt
 
-function totalRamBytes
+# TODO : document
+function isInteger
 {
-#    cat /proc/meminfo | grep MemTotal | sed "s/^MemTotal:\s*\([0-9]*\)\skB/\1K/" | numfmt --from=si --to=si --round=nearest --format "%.0f"
-#    cat /proc/meminfo | grep MemTotal | sed "s/^MemTotal:\s*\([0-9]*\)\skB/\1K/"
-local totalRamKb=$(cat /proc/meminfo | grep MemTotal | sed "s/^MemTotal:\s*\([0-9]*\)\skB/\1/")
-
-    echo $(( $totalRamKb * 1024 ))
+    [[ $1 =~ ^[0-9]+$ ]]
 }
 
-function neededSwapSpaceBytes
+# TODO : document
+function getHumanBytes
+{
+    amountInBytes="${1:-0}"
+    try isInteger "$amountInBytes"
+
+    echo $amountInBytes | numfmt --from=si --to=si --round=nearest --format "%.0f"
+}
+
+# TODO : document
+function getRamSizeBytes
+{
+    local ramSizeKb=$(cat /proc/meminfo | grep MemTotal | sed "s/^MemTotal:\s*\([0-9]*\)\skB/\1/")
+    try isInteger "$ramSizeKb"
+
+    echo $(( $ramSizeKb * 1024 ))
+}
+
+bytes500M=524288000
+bytes2G=2147483648
+#bytes4G=4294967296
+bytes8G=8589934592
+#bytes64G=68719476736
+
+# TODO : document
+function getSwapSizeBytes
 {
 
 #
@@ -43,15 +65,10 @@ function neededSwapSpaceBytes
 #    >=64GB      [1.4] At least 4 GB                  [2.4] Hibernation not recommended
 #
 
-    ramBytes="$1"
-    allowHibernation=${2:-true}
+    local ramBytes="${1:-0}"
+    local allowHibernation=${2:-true}
     try test -n "$ramBytes"
     try test "$allowHibernation" = "true" -o "$allowHibernation" = "false"
-
-    bytes2G=2147483648
-    bytes4G=4294967296
-    bytes8G=8589934592
-    bytes64G=68719476736
 
     # [2]
     if $allowHibernation; then
@@ -69,14 +86,9 @@ function neededSwapSpaceBytes
        fi
 
        # [2.3]
-       if [ $ramBytes -le $bytes64G ]; then
-           echo $(( $ramBytes * 3 / 2 ))
-           return
-       fi
-
        # [2.4] Hibernation not recommended,
-       # but just return the amount of RAM
-       echo $ramBytes
+       #       but just return 1.5x the amount of RAM
+       echo $(( $ramBytes * 3 / 2 ))
        return
 
     # [1]
@@ -94,7 +106,7 @@ function neededSwapSpaceBytes
            return
        fi
 
-       # [1.3], [1.4], At least 4GB,
+       # [1.3], [1.4] At least 4GB,
        # but just return 8GB
        echo $bytes8G
        return
@@ -103,22 +115,9 @@ function neededSwapSpaceBytes
 
 }
 
-echo Total RAM in bytes: $(totalRamBytes)
-echo Recommended amount of swap space: $(neededSwapSpaceBytes $(totalRamBytes))
-exit 0
-
-function printBytesHuman
-{
-    echo $1 | numfmt --from=si --to=si --round=nearest --format "%.0f"
-}
-
 checkForHelp $1
 
 requireRoot
-
-echo $(totalRamBytes)
-printBytesHuman 500000
-exit
 
 # Source config file
 configFile="$1"
@@ -179,18 +178,48 @@ if [ "$?" -eq "0" ]; then
 fi
 
 # (Re-)partition the target: 'root', 'swap' and 'home'
-rootSize=2G
-# TODO : check available space on target
-#rootSize=6G
-# TODO : calculate swapSize according to recommendations
-swapSize=$(totalRam)
+
+# Get RAM size
+ramSizeBytes=$(getRamSizeBytes)
 exitOnError "Error: could not obtain the RAM size"
+ramSizeHuman=$(getHumanBytes $ramSizeBytes)
+exitOnError "Error: could not obtain the RAM size in human-friendly format"
+echo RAM size == $ramSizeHuman \($ramSizeBytes bytes\)
 
-echo swap size == $swapSize
+# Calculate swap size according to recommendations
+swapSizeBytes=$(getSwapSizeBytes $ramSizeBytes true)
+exitOnError "Error: could not obtain the swap size"
+swapSizeHuman=$(getHumanBytes $swapSizeBytes)
+exitOnError "Error: could not obtain the swap size in human-friendly format"
+echo Swap size == $swapSizeHuman \($swapSizeBytes bytes\)
 
+# Size of root FS
+rootSizeBytes=$bytes2G
+rootSizeHuman=$(getHumanBytes $rootSizeBytes)
+exitOnError "Error: could not obtain the root size in human-friendly format"
+echo Root size == $rootSizeHuman \($rootSizeBytes bytes\)
+
+# Obtain the size of the target
+if $targetIsImage; then
+    targetSizeBytes=$(stat --format='%s' "$target")
+else
+    targetSizeBytes=$(blockdev --getsize64 "$target")
+fi
+exitOnError "Error: could not obtain the size of the target"
+targetSizeHuman=$(getHumanBytes $targetSizeBytes)
+exitOnError "Error: could not obtain the target's size in human-friendly format"
+echo Target size == $targetSizeHuman \($targetSizeBytes bytes\)
+
+# Check if the target is of sufficient size
+neededSizeBytes=$(( $rootSizeBytes + $swapSizeBytes + $bytes500M ))
+if [ $neededSizeBytes -lt $targetSizeBytes ]; then
+    exitWith 1 "Error: the target '$target' is too small"
+fi
+
+# Partition target
 try sfdisk --label dos --wipe always --wipe-partitions always "$target" << EOF
-size=$rootSize,type=83
-size=$swapSize,type=82
+size=$rootSizeHuman,type=83
+size=$swapSizeHuman,type=82
 type=83
 EOF
 
