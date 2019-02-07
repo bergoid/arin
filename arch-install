@@ -15,15 +15,29 @@ Arch linux installation script.
 DOCSTRING
 }
 
-require numfmt
+require numfmt fallocate sfdisk
 
-# TODO : document
+############################################################
+#
+# Check if a given string represents an integer
+#
+# isInteger STRING
+#
+# The exit status of this function is zero if STRING is
+# an integer and nonzero otherwise.
+#
 function isInteger
 {
     [[ $1 =~ ^[0-9]+$ ]]
 }
 
-# TODO : document
+############################################################
+#
+# Convert a number representing an amount of bytes to a
+# human-readable format.
+#
+# getHumanBytes NUMBYTES
+#
 function getHumanBytes
 {
     amountInBytes="${1:-0}"
@@ -32,7 +46,10 @@ function getHumanBytes
     echo $amountInBytes | numfmt --from=si --to=si --round=nearest --format "%.0f"
 }
 
-# TODO : document
+############################################################
+#
+# Obtain the amount of RAM in bytes
+#
 function getRamSizeBytes
 {
     local ramSizeKb=$(cat /proc/meminfo | grep MemTotal | sed "s/^MemTotal:\s*\([0-9]*\)\skB/\1/")
@@ -47,7 +64,16 @@ bytes2G=2147483648
 bytes8G=8589934592
 #bytes64G=68719476736
 
-# TODO : document
+############################################################
+#
+# Calculate the recommended amount of swap space.
+#
+# getSwapSizeBytes RAMSIZE ALLOWHIBERNATION
+#
+# RAMSIZE: the amount of RAM in bytes
+# ALLOWHIBERNATION: if "true", the ability for hibernation
+#                   will be taken into account
+#
 function getSwapSizeBytes
 {
 
@@ -183,37 +209,43 @@ fi
 ramSizeBytes=$(getRamSizeBytes)
 exitOnError "Error: could not obtain the RAM size"
 ramSizeHuman=$(getHumanBytes $ramSizeBytes)
-exitOnError "Error: could not obtain the RAM size in human-friendly format"
 echo RAM size == $ramSizeHuman \($ramSizeBytes bytes\)
 
-# Calculate swap size according to recommendations
+# Calculate the recommended swap size
 swapSizeBytes=$(getSwapSizeBytes $ramSizeBytes true)
 exitOnError "Error: could not obtain the swap size"
 swapSizeHuman=$(getHumanBytes $swapSizeBytes)
-exitOnError "Error: could not obtain the swap size in human-friendly format"
 echo Swap size == $swapSizeHuman \($swapSizeBytes bytes\)
 
 # Size of root FS
 rootSizeBytes=$bytes2G
 rootSizeHuman=$(getHumanBytes $rootSizeBytes)
-exitOnError "Error: could not obtain the root size in human-friendly format"
 echo Root size == $rootSizeHuman \($rootSizeBytes bytes\)
 
 # Obtain the size of the target
 if $targetIsImage; then
+    require stat
     targetSizeBytes=$(stat --format='%s' "$target")
 else
+    require blockdev
     targetSizeBytes=$(blockdev --getsize64 "$target")
 fi
 exitOnError "Error: could not obtain the size of the target"
 targetSizeHuman=$(getHumanBytes $targetSizeBytes)
-exitOnError "Error: could not obtain the target's size in human-friendly format"
 echo Target size == $targetSizeHuman \($targetSizeBytes bytes\)
 
 # Check if the target is of sufficient size
 neededSizeBytes=$(( $rootSizeBytes + $swapSizeBytes + $bytes500M ))
-if [ $neededSizeBytes -lt $targetSizeBytes ]; then
-    exitWith 1 "Error: the target '$target' is too small"
+if [ $neededSizeBytes -gt $targetSizeBytes ]; then
+    errcho "Error: the target '$target' is too small"
+    errcho "Size of '$target': $targetSizeHuman"
+    errcho "Needed size: $(getHumanBytes $neededSizeBytes)"
+    if $targetIsImage; then
+        errcho "You can enlarge '$target' with this command:"
+        errcho
+        errcho "    fallocate -l $(getHumanBytes $(( $neededSizeBytes * 2 )) ) $(basename $target)"
+        exitWith 1
+    fi
 fi
 
 # Partition target
@@ -231,6 +263,7 @@ if $targetIsImage; then
     p=p
 else
     targetDevice="$target"
+
 fi
 
 partitionRoot="${targetDevice}${p}1"
@@ -245,6 +278,11 @@ mkfs.ext4 "$partitionHome"
 
 # Mount the root & home partitions in a folder
 mountDir="mount-$hostName-$(timestamp-id)"
+
+tru \
+    "rm -rf $mountDir" \
+    mkdir -p "$mountDir"
+
 mountPartition "$partitionRoot" "$mountDir/root"
 mountPartition "$partitionHome" "$mountDir/home"
 
