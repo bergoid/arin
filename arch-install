@@ -167,6 +167,13 @@ promptIfEmpty password "User password to login on the system"
 promptIfEmpty hostName "Hostname of the system"
 promptIfEmpty wifiSsid "SSID of the Wi-Fi network (leave empty if you don't want to configure Wi-Fi)"
 promptIfEmpty wifiPassphrase "Passphrase of the Wi-Fi network (leave empty if you don't want to configure Wi-Fi)"
+# TODO Give default value to these variables, if empty:
+#timezone
+#langterr
+#charset
+#enableHibernation
+#enableDiskEncryption
+#wifiUseHostCredentials
 
 # Validate config values
 try test -n "$target"
@@ -288,3 +295,59 @@ mountPartition "$partitionHome" "$mountDir/home"
 
 # Make sure the system clock on the host OS is synced with NTP
 try timedatectl set-ntp true
+
+# Install some initial packages on the target system
+pacstrap "$mountDir/root" base grub sudo reflector
+
+# Generate fstab file
+genfstab -U "$mountDir/root" >> "$mountDir/root/etc/fstab"
+
+# ‘chroot’ into the target filsystem
+cat << EOF | arch-chroot "$mountDir/root"
+
+# Set timezone
+ln -sf "/usr/share/zoneinfo/$timezone" /etc/localtime
+
+# Use UTC on the hardware clock
+hwclock --systohc --utc
+
+# Set the locale
+echo "$langterr.$charset $charset" > /etc/locale.gen
+locale-gen
+echo LANG=$langterr.$charset > /etc/locale.conf
+
+# Set the keyboard layout
+echo KEYMAP="$keymap" > /etc/vconsole.conf
+
+# Set the hostname
+echo "$hostname" > /etc/hostname
+
+# Set hostname as an alias for localhost
+echo "127.0.0.1 $hostname.localdomain $hostname" >> /etc/hosts
+
+# Add a non-root user, with ‘sudo’ rights
+groupadd sudoers
+useradd -G sudoers -m "$username" -p "$(openssl passwd -1 "$password")"
+echo "%sudoers ALL=(ALL) ALL" >> /etc/sudoers
+
+# Update & sort mirrorlist
+reflector --age 12 --protocol https --sort rate --save /etc/pacman.d/mirrorlist
+
+# Install some necessary packages:
+pacman -Syu base-devel clang git vim tmux time zip unzip dialog dos2unix hwinfo haveged arch-install-scripts wpa_supplicant openssh knockd
+
+# Install some more optional packages:
+pacman -Syu lighttpd ffmpeg python-mako python-sphinx asciidoc
+
+# Install xorg-related packages:
+sudo pacman -Syu xorg-server xorg-xinit xorg-apps xorg-apps xorg-xfontsel xorg-fonts-misc unclutter dmenu ttf-inconsolata firefox
+
+# Install boot loader ‘grub’
+grub-install --target=i386-pc /dev/sda
+sed -i "s/^GRUB_CMDLINE_LINUX_DEFAULT=.*$/GRUB_CMDLINE_LINUX_DEFAULT=\"quiet video=SVIDEO-1:d\"/" /etc/default/grub
+grub-mkconfig -o /boot/grub/grub.cfg
+
+
+EOF
+
+# TODO : separate boot partition needed for encrypted HDD ?
